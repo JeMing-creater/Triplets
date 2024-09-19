@@ -1,0 +1,26 @@
+trainer:
+  num_epochs: 100
+  lr: [0.01, 0.01, 0.01]
+  warmups: [9,18,58]
+  power: 0.1
+  optimizer: sgd
+  decay_rate: 0.99
+  weight_decay: 0.05
+  weight_decay_end: 0.04
+  val_training: True
+  resume: True
+
+finetune:
+  checkpoint: Rendezvous
+
+dataset:
+  batch_size: 32
+  num_workers: 4
+  kfold: 1
+  data_dir: '/workspace/CHEN_ZK/Rendezvous/rendezvous/pytorch/CholecT45/CholecT45 - 副本/'
+  dataset_variant: 'cholect45-crossval'
+  pin_memory: True
+  persistent_workers: True
+  drop_last: False
+  weight_randa: True
+  data_augmentations: ['original', 'vflip', 'hflip', 'contrast', 'rot90']
