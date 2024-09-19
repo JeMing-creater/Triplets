@@ -1,7 +1,7 @@
 # Experiment environment of triplet datasets
 
 ## setting
-#### all params of this experiment environment are included in \config.yml, user can change connection params for your detail environment.
+#### all params of this experiment environment are included in \config.yml, user can change connection params for your detail environment, especially the `config.dataset.data_dir`.
 
 #### this code only require the version of accelerate <= 0.18.0.
 
