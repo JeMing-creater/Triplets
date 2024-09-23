@@ -2,7 +2,6 @@ import os
 import random
 import numpy as np
 from PIL import Image
-import src.dataloader as dataloader
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
@@ -190,7 +189,7 @@ class T50(Dataset):
 
 
 def give_dataset(config):
-    dataset = dataloader.CholecT50( 
+    dataset = CholecT50( 
             dataset_dir=config.data_dir, 
             dataset_variant=config.dataset_variant,
             test_fold=config.kfold,
@@ -210,22 +209,29 @@ def give_dataset(config):
 
 
 if __name__ == '__main__':
+    import yaml
+    from easydict import EasyDict
+    # config setting
+    config = EasyDict(yaml.load(open('/workspace/Jeming/NewTriplets/config.yml', 'r', encoding="utf-8"), Loader=yaml.FullLoader))
     
     batch_size = 2
-    data_dir = '/workspace/CHEN_ZK/Rendezvous/rendezvous/pytorch/CholecT45/CholecT45 - 副本/'
+    data_dir = '/root/.cache/huggingface/forget/datasets/CholecT45/'
     dataset_variant = 'cholect45-crossval'
     kfold = 1
     data_augmentations = ['original', 'vflip', 'hflip', 'contrast', 'rot90']
     
-    dataset = dataloader.CholecT50( 
+    train_loader, val_loader, test_loader = give_dataset(config.dataset)
+    
+    dataset = CholecT50( 
             dataset_dir=data_dir, 
             dataset_variant=dataset_variant,
             test_fold=kfold,
             augmentation_list=data_augmentations,
             )
     train_dataset, val_dataset, test_dataset = dataset.build()
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, prefetch_factor=3*batch_size, num_workers=3, pin_memory=True, persistent_workers=True, drop_last=False)
-    for batch, (img, (y1, y2, y3, y4)) in enumerate(train_dataloader):
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, prefetch_factor=3*batch_size, num_workers=3, pin_memory=True, persistent_workers=True, drop_last=False)
+    
+    for batch, (img, (y1, y2, y3, y4)) in enumerate(train_loader):
             img, y1, y2, y3, y4 = img.cuda(), y1.cuda(), y2.cuda(), y3.cuda(), y4.cuda() 
             print(img.shape)
             print(y1.shape)

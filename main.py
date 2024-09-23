@@ -26,22 +26,25 @@ config = EasyDict(yaml.load(open('config.yml', 'r', encoding="utf-8"), Loader=ya
 
 # gobel evaluation metrics
 mAP = ivtmetrics.Recognition(100)
-mAPi = ivtmetrics.Recognition(6)
-mAPv = ivtmetrics.Recognition(10)
-mAPt = ivtmetrics.Recognition(15)
+# mAPi = ivtmetrics.Recognition(6)
+# mAPv = ivtmetrics.Recognition(10)
+# mAPt = ivtmetrics.Recognition(15)
 mAP.reset_global()
-mAPi.reset_global()
-mAPv.reset_global()
-mAPt.reset_global()
+# mAPi.reset_global()
+# mAPv.reset_global()
+# mAPt.reset_global()
 
 def val(model, dataloader, loss_functions, activation, step=0, train=False):
     mAP.reset_global()
+    # mAPi.reset_global()
+    # mAPv.reset_global()
+    # mAPt.reset_global()
     size = len(dataloader.dataset)
     num_batches = len(dataloader)
     mAP.reset()  
-    mAPv.reset() 
-    mAPt.reset() 
-    mAPi.reset()
+    # mAPv.reset() 
+    # mAPt.reset() 
+    # mAPi.reset()
     if train == False:
         data_set = 'Val'
     else:
@@ -61,9 +64,9 @@ def val(model, dataloader, loss_functions, activation, step=0, train=False):
             loss_ivt   = loss_functions['loss_fn_ivt'](logit_ivt, y4.float())  
             loss       = (loss_i) + (loss_v) + (loss_t) + loss_ivt
             # all score
-            mAPi.update(y1.float().detach().cpu(), activation(logit_i).detach().cpu()) # Log metrics 
-            mAPv.update(y2.float().detach().cpu(), activation(logit_v).detach().cpu()) # Log metrics 
-            mAPt.update(y3.float().detach().cpu(), activation(logit_t).detach().cpu()) # Log metrics 
+            # mAPi.update(y1.float().detach().cpu(), activation(logit_i).detach().cpu()) # Log metrics 
+            # mAPv.update(y2.float().detach().cpu(), activation(logit_v).detach().cpu()) # Log metrics 
+            # mAPt.update(y3.float().detach().cpu(), activation(logit_t).detach().cpu()) # Log metrics 
             mAP.update(y4.float().detach().cpu(), activation(triplet).detach().cpu())
             # log loss
             if train==False:
@@ -76,21 +79,30 @@ def val(model, dataloader, loss_functions, activation, step=0, train=False):
                     }, step=step)
                 step += 1
     mAP.video_end() 
-    mAPv.video_end()
-    mAPt.video_end()
-    mAPi.video_end()
+    # mAPv.video_end()
+    # mAPt.video_end()
+    # mAPi.video_end()
     
     APscore = mAP.compute_video_AP()['mAP']
-    APvscore = mAPv.compute_video_AP()['mAP']
-    APtscore = mAPt.compute_video_AP()['mAP']
-    APiscore = mAPi.compute_video_AP()['mAP']
+    
+    mAP_i = mAP.compute_video_AP('i', ignore_null=True)
+    mAP_v = mAP.compute_video_AP('v', ignore_null=True)
+    mAP_t = mAP.compute_video_AP('t', ignore_null=True)
+    
+    mAP_iv = mAP.compute_video_AP('iv', ignore_null=True)
+    mAP_it = mAP.compute_video_AP('it', ignore_null=True)
+    mAP_ivt = mAP.compute_video_AP('ivt', ignore_null=True) 
     
     metrics = {
-        f'{data_set}/APscore': round(APscore * 100, 3),
-        f'{data_set}/APvscore': round(APvscore * 100, 3),
-        f'{data_set}/APtscore': round(APtscore * 100, 3),
-        f'{data_set}/APiscore': round(APiscore * 100, 3)
+        f'{data_set}/APscore': round(APscore, 3),
+        f'{data_set}/I': round(mAP_i["mAP"] * 100, 3),
+        f'{data_set}/V': round(mAP_v["mAP"] * 100, 3),
+        f'{data_set}/T': round(mAP_t["mAP"] * 100, 3),
+        f'{data_set}/IV': round(mAP_iv["mAP"] * 100, 3),
+        f'{data_set}/IT': round(mAP_it["mAP"] * 100, 3),
+        f'{data_set}/IVT': round(mAP_ivt["mAP"] * 100, 3)
     }
+    
     return metrics, step
     
 def train_one_epoch(config, model, train_loader, loss_functions, optimizers, schedulers, accelerator, epoch, step):
@@ -133,24 +145,36 @@ def train_one_epoch(config, model, train_loader, loss_functions, optimizers, sch
 
     if config.trainer.val_training == True:
         metrics, _ = val(model, train_loader, loss_functions, activation, step=0, train=True)
-        ivt_score = metrics['Train/APscore']
-        i_score = metrics['Train/APiscore']
-        t_score = metrics['Train/APtscore']
-        v_score = metrics['Train/APvscore']
-        accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Training Metrics => ivt:[{ivt_score}] i: [{i_score}] v: [{v_score}] t: [{t_score}]', flush=True)    
+        APscore = metrics['Train/APscore']
+        i_score = metrics['Train/I']
+        t_score = metrics['Train/T']
+        v_score = metrics['Train/V']
+        iv_score = metrics['Train/IV']
+        it_score = metrics['Train/IT']
+        ivt_score = metrics['Train/IVT']
+        accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Training Metrics => APscore:[{APscore}] i: [{i_score}] v: [{v_score}] t: [{t_score}] iv: [{iv_score}] iv: [{it_score}] ivt: [{ivt_score}]', flush=True)    
         accelerator.log(metrics, step=epoch)
     
     return step
 
 def val_one_epoch(config, model, val_loader, loss_functions, activation, epoch, step):
     metrics, step = val(model, val_loader, loss_functions, activation, step=step, train=False)
-    ivt_score = metrics['Val/APscore']
-    i_score = metrics['Val/APiscore']
-    t_score = metrics['Val/APtscore']
-    v_score = metrics['Val/APvscore']
-    accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Val Metrics => ivt:[{ivt_score}] i: [{i_score}] v: [{v_score}] t: [{t_score}]', flush=True)    
+    # ivt_score = metrics['Val/APscore']
+    # i_score = metrics['Val/APiscore']
+    # t_score = metrics['Val/APtscore']
+    # v_score = metrics['Val/APvscore']
+    
+    APscore = metrics['Val/APscore']
+    i_score = metrics['Val/I']
+    t_score = metrics['Val/T']
+    v_score = metrics['Val/V']
+    iv_score = metrics['Val/IV']
+    it_score = metrics['Val/IT']
+    ivt_score = metrics['Val/IVT']
+    
+    accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Val Metrics => APscore:[{APscore}] i: [{i_score}] v: [{v_score}] t: [{t_score}] iv: [{iv_score}] it: [{it_score}] ivt: [{ivt_score}] ', flush=True)    
     accelerator.log(metrics, step=epoch)
-    return ivt_score, metrics, step
+    return APscore, metrics, step
 
 if __name__ == '__main__':
     same_seeds(50)
