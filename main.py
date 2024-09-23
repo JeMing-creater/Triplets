@@ -94,7 +94,7 @@ def val(model, dataloader, loss_functions, activation, step=0, train=False):
     mAP_ivt = mAP.compute_video_AP('ivt', ignore_null=True) 
     
     metrics = {
-        f'{data_set}/APscore': round(APscore, 3),
+        f'{data_set}/APscore': round(APscore * 100, 3),
         f'{data_set}/I': round(mAP_i["mAP"] * 100, 3),
         f'{data_set}/V': round(mAP_v["mAP"] * 100, 3),
         f'{data_set}/T': round(mAP_t["mAP"] * 100, 3),
