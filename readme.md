@@ -5,6 +5,10 @@
 
 #### this code only require the version of accelerate <= 0.18.0.
 
+## get project
+```
+git clone https://github.com/JeMing-creater/Triplets.git
+```
 
 ## training
 ### two types of training:

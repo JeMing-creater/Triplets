@@ -20,7 +20,7 @@ finetune:
   checkpoint: Rendezvous
 
 dataset:
-  batch_size: 32
+  batch_size: 16
   class_num: 100
   num_workers: 4
   kfold: 1
