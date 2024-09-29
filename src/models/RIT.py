@@ -1,143 +1,87 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """
-CODE RELEASE TO SUPPORT RESEARCH.
-COMMERCIAL USE IS NOT PERMITTED.
-#==============================================================================
-An implementation based on:
-***
-    C.I. Nwoye, T. Yu, C. Gonzalez, B. Seeliger, P. Mascagni, D. Mutter, J. Marescaux, N. Padoy. 
-    Rendezvous: Attention Mechanisms for the Recognition of Surgical Action Triplets in Endoscopic Videos. 
-    Medical Image Analysis, 78 (2022) 102433.
-***  
-Created on Thu Oct 21 15:38:36 2021
-#==============================================================================  
-Copyright 2021 The Research Group CAMMA Authors All Rights Reserved.
-(c) Research Group CAMMA, University of Strasbourg, France
-@ Laboratory: CAMMA - ICube
-@ Author: Nwoye Chinedu Innocent
-@ Website: http://camma.u-strasbg.fr
-#==============================================================================
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
-     http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-#==============================================================================
+(c) Research Group CAMMA, University of Strasbourg, IHU Strasbourg, France
+Website: http://camma.u-strasbg.fr
 """
 
 import os
-import torch
 import numpy as np
+from typing import Tuple
+from collections import OrderedDict
+from einops import repeat, rearrange
+
+import torch
 from torch import nn
 import torch.nn.functional as F
-import torchvision.models as basemodels
 import torchvision.transforms as transforms
-
+import torchvision.models as basemodels
 
 OUT_HEIGHT = 8
 OUT_WIDTH  = 14
 
+#%% Rendezvous-in-time (RiT)
+class RiT(nn.Module):
+    def __init__(self, basename="resnet18", num_tool=6, num_verb=10, num_target=15, num_triplet=100, layer_size=8, num_heads=4, d_model=128, hr_output=False, use_ln=False, m=3):
+        super(RiT, self).__init__()
+        self.encoder = Encoder(basename, num_tool, num_verb, num_target, num_triplet, hr_output=hr_output, m=m)
+        self.decoder = Decoder(layer_size, d_model, num_heads, num_triplet, use_ln=use_ln, m=m)     
 
-#%% Model Rendezvous
-class Rendezvous(nn.Module):
-    def __init__(self, basename="resnet18", num_tool=6, num_verb=10, num_target=15, num_triplet=100, layer_size=8, num_heads=4, d_model=128, hr_output=False, use_ln=False):
-       #hr_output 参数用于控制基础模型（BaseModel）是否使用高分辨率输出。
-       #参数控制是否在解码器（Decoder）中使用层归一化（Layer Normalization）。
-        super(Rendezvous, self).__init__()
-        self.encoder = Encoder(basename, num_tool, num_verb, num_target, num_triplet, hr_output=hr_output)
-        self.decoder = Decoder(layer_size, d_model, num_heads, num_triplet, use_ln=use_ln)    
-     
     def forward(self, inputs):
-        #先将input输入进去,得到编码器输出的enc_i, enc_v, enc_t, enc_ivt,然后将这四个丢进decode
         enc_i, enc_v, enc_t, enc_ivt = self.encoder(inputs)
         dec_ivt = self.decoder(enc_i, enc_v, enc_t, enc_ivt)
         return enc_i, enc_v, enc_t, dec_ivt
 
-
 #%% Triplet Components Feature Encoder
 class Encoder(nn.Module):
-    def __init__(self, basename='resnet18', num_tool=6,  num_verb=10, num_target=15, num_triplet=100, hr_output=False):
+    def __init__(self, basename='resnet18', num_tool=6,  num_verb=10, num_target=15, num_triplet=100, enctype='cagam', is_bottleneck=True, hr_output=False, m=3):
         super(Encoder, self).__init__()
         depth = 64 if basename == 'resnet18' else 128
+        def Ignore(x): return None
         self.basemodel  = BaseModel(basename, hr_output)
-        self.wsl        = WSL(num_tool, depth) #弱监督定位
+        self.wsl        = WSL(num_tool, depth)
         self.cagam      = CAGAM(num_tool, num_verb, num_target)
-        self.bottleneck = Bottleneck(num_triplet)
+        self.bottleneck = Bottleneck(num_triplet) if is_bottleneck else Ignore
         
     def forward(self, x):
-        high_x, low_x = self.basemodel(x)#接收返回来的高分辨率特征和低分辨率特征
-        # print("经过resnet特征提取器后:")
-        # print("high_x.shape",high_x.shape), "       ","low_x.shape",print(low_x.shape)
+        high_x, low_x = self.basemodel(x)
         enc_i         = self.wsl(high_x)
-        # print("经过这个wsl之后:")
-
-        # print("enc_i[0].shape",enc_i[0].shape)
-        # print("enc_i[1].shape",enc_i[1].shape)
         enc_v, enc_t  = self.cagam(high_x, enc_i[0])
-        # print("经过这个CAGAM之后:")
-
-        # print("enc_v[0].shape", enc_v[0].shape)
-        # print("enc_v[1].shape", enc_v[1].shape)
-
-        # print("enc_t[0].shape", enc_t[0].shape)
-        # print("enc_t[1].shape", enc_t[1].shape)
         enc_ivt       = self.bottleneck(low_x)
-        # print("bottleneck的输入low_x形状是",low_x.shape, "输出的enc_ivt的形状是",enc_ivt.shape)
         return enc_i, enc_v, enc_t, enc_ivt
-
 
 #%% MultiHead Attention Decoder
 class Decoder(nn.Module):
-    def __init__(self, layer_size, d_model, num_heads, num_class=100, use_ln=False):
+    def __init__(self, layer_size, d_model, num_heads, num_class=100, use_ln=False, m=3):
         super(Decoder, self).__init__()        
         self.projection = nn.ModuleList([Projection(num_triplet=num_class, out_depth=d_model) for i in range(layer_size)])
         self.mhma       = nn.ModuleList([MHMA(num_class=num_class, depth=d_model, num_heads=num_heads, use_ln=use_ln) for i in range(layer_size)])
         self.ffnet      = nn.ModuleList([FFN(k=layer_size-i-1, num_class=num_class, use_ln=use_ln) for i in range(layer_size)])
-        self.classifier = Classifier(num_class)
-        
+        self.classifier = Classifier(num_class, m=m)
+    
     def forward(self, enc_i, enc_v, enc_t, enc_ivt):
-        i=1
         X = enc_ivt.clone()
         for P, M, F in zip(self.projection, self.mhma, self.ffnet):
             X = P(enc_i[0], enc_v[0], enc_t[0], X)
-            # print("第",i,"次这个projection操作后x元组的形状是",len(X))
             X = M(X)
-            # print("第", i, "次这个MHMA操作后x的形状是", X.shape)
             X = F(X)
-            # print("第", i, "次这个FFN操作后x的形状是", X.shape)
-            i+=1
         logits = self.classifier(X)
-        # print("经过分类器后这个logits的形状是:",logits.shape)
         return logits
-
-
+ 
 #%% Feature extraction backbone
-class BaseModel(nn.Module):   
+class BaseModel(nn.Module):
     def __init__(self, basename='resnet18', hr_output=False, *args):
         super(BaseModel, self).__init__(*args)
         self.output_feature = {} 
         if basename == 'resnet18':
             self.basemodel      = basemodels.resnet18(pretrained=True)     
-            if hr_output: self.increase_resolution()#调整增加模型的分辨率。减小conv1 层的步幅和downsample
+            if hr_output: self.increase_resolution()
             self.basemodel.layer1[1].bn2.register_forward_hook(self.get_activation('low_level_feature'))
-            self.basemodel.layer4[1].bn2.register_forward_hook(self.get_activation('high_level_feature'))
-            #注册前向钩子 get_activation，以便在 ResNet50 的特定层（layer1[2].bn2 和 layer4[2].bn2）前向传播时，捕获并保存这些层的输出特征。
+            self.basemodel.layer4[1].bn2.register_forward_hook(self.get_activation('high_level_feature'))        
         if basename == 'resnet50':
-            self.basemodel      = basemodels.resnet50(pretrained=True)
+            self.basemodel      = basemodels.resnet50(pretrained=True) 
+            # print(self.basemodel)
             self.basemodel.layer1[2].bn2.register_forward_hook(self.get_activation('low_level_feature'))
             self.basemodel.layer4[2].bn2.register_forward_hook(self.get_activation('high_level_feature'))
-        # # 由于使用hook，损失回传时将不更新fc，在多卡训练环境下，将导致错误，因此冻结该部分参数。
-        # for param in self.basemodel.fc.parameters():
-        #         param.requires_grad = False
-                
+        
     def increase_resolution(self):  
         global OUT_HEIGHT, OUT_WIDTH  
         self.basemodel.layer3[0].conv1.stride = (1,1)
@@ -145,20 +89,19 @@ class BaseModel(nn.Module):
         self.basemodel.layer4[0].conv1.stride = (1,1)
         self.basemodel.layer4[0].downsample[0].stride=(1,1)
         OUT_HEIGHT *= 4
-        OUT_WIDTH  *= 4#改变输出的高和宽
-        print("using high resolution output ({}x{})".format(OUT_HEIGHT,OUT_WIDTH))  #打印新的分辨率
+        OUT_WIDTH  *= 4
+        print("using high resolution output ({}x{})".format(OUT_HEIGHT,OUT_WIDTH))
+        
 
     def get_activation(self, layer_name):
-        def hook(module, input, output):
+        def hook(module, input: Tuple[torch.Tensor], output:torch.Tensor):
             self.output_feature[layer_name] = output
-        return hook#这里返回的是这个hook函数给调用这个get_activation的时候调用
+        return hook
     
     def forward(self, x):
         _ = self.basemodel(x)
         return self.output_feature['high_level_feature'], self.output_feature['low_level_feature']
-    #返回低级特征和高级特征
 
-     
 #%% Weakly-Supervised localization
 class WSL(nn.Module):
     def __init__(self, num_class, depth=64):
@@ -167,7 +110,7 @@ class WSL(nn.Module):
         self.cam   = nn.Conv2d(in_channels=depth, out_channels=num_class, kernel_size=1)
         self.elu   = nn.ELU()
         self.bn    = nn.BatchNorm2d(depth)
-        self.gmp   = nn.AdaptiveMaxPool2d((1,1))# 自适应最大池化层
+        self.gmp   = nn.AdaptiveMaxPool2d((1,1))
         
     def forward(self, x):
         feature = self.conv1(x)
@@ -176,13 +119,13 @@ class WSL(nn.Module):
         cam     = self.cam(feature)
         logits  = self.gmp(cam).squeeze(-1).squeeze(-1)
         return cam, logits
- 
 
 #%% Unfiltered Bottleneck layer
-class Bottleneck(nn.Module):#输入low_x的64个通道,输出三元组100个类别
+class Bottleneck(nn.Module):
     def __init__(self, num_class):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(in_channels=64, out_channels=256, stride=(2,2), kernel_size=3)
+        # self.conv2 = nn.Conv2d(in_channels=256, out_channels=num_class, kernel_size=3,padding=1)
         self.conv2 = nn.Conv2d(in_channels=256, out_channels=num_class, kernel_size=1)
         self.elu   = nn.ELU()
         self.bn1   = nn.BatchNorm2d(256)
@@ -198,7 +141,115 @@ class Bottleneck(nn.Module):#输入low_x的64个通道,输出三元组100个类�
         return feature
 
 
-#%% Class Activation Guided Attention Mechanism
+#%% Class Activation Guided Temporal Attention Mechanism (CAGTAM)
+# TODO: change name to CAGTAM
+# class CAGAM(nn.Module):    
+#     def __init__(self, num_tool, num_verb, num_target, in_depth=512, m=3):
+#         super(CAGAM, self).__init__()        
+#         out_depth               = num_tool        
+#         self.verb_context       = nn.Conv2d(in_channels=in_depth, out_channels=out_depth, kernel_size=3, padding=1)        
+#         self.verb_query         = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)
+#         self.verb_tool_query    = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)        
+#         self.verb_key           = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)
+#         self.verb_tool_key      = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)        
+#         self.verb_cmap          = nn.Conv2d(in_channels=out_depth, out_channels=num_verb, kernel_size=1)       
+#         self.target_context     = nn.Conv2d(in_channels=in_depth, out_channels=out_depth, kernel_size=3, padding=1)     
+#         self.target_query       = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)
+#         self.target_tool_query  = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)        
+#         self.target_key         = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)
+#         self.target_tool_key    = nn.Conv2d(in_channels=out_depth, out_channels=out_depth, kernel_size=1)        
+#         self.target_cmap        = nn.Conv2d(in_channels=out_depth, out_channels=num_target, kernel_size=1)        
+#         self.gmp       = nn.AdaptiveMaxPool2d((1,1))
+#         self.elu       = nn.ELU()    
+#         self.soft      = nn.Softmax(dim=1)    
+#         self.flat      = nn.Flatten(2,3)  
+#         self.bn1       = nn.BatchNorm2d(out_depth)
+#         self.bn2       = nn.BatchNorm2d(out_depth)
+#         self.bn3       = nn.BatchNorm2d(out_depth)
+#         self.bn4       = nn.BatchNorm2d(out_depth)
+#         self.bn5       = nn.BatchNorm2d(out_depth)
+#         self.bn6       = nn.BatchNorm2d(out_depth)
+#         self.bn7       = nn.BatchNorm2d(out_depth)
+#         self.bn8       = nn.BatchNorm2d(out_depth)
+#         self.bn9       = nn.BatchNorm2d(out_depth)
+#         self.bn10      = nn.BatchNorm2d(out_depth) 
+#         self.bn11      = nn.BatchNorm2d(out_depth) 
+#         self.bn12      = nn.BatchNorm2d(out_depth)        
+#         self.encoder_cagam_verb_beta   = torch.nn.Parameter(torch.randn(1))
+#         self.encoder_cagam_target_beta = torch.nn.Parameter(torch.randn(1))
+#         self.m         = m
+#         self.bn13      = nn.BatchNorm2d(self.m+1)
+#         self.gate      = nn.Conv2d(self.m+1, self.m+1, kernel_size=1) if self.m>0 else nn.Identity() 
+#         self.fc1       = nn.Linear(num_verb, 1)
+#         self.fc2       = nn.Linear(num_target, 1)
+
+#         # NOTE: Temporal Attention Module (TAM)
+#         self.cmap_attn4 = TAM(in_channels=num_verb, m=self.m, k=1)
+#         self.cmap_attn5 = TAM(in_channels=num_verb, m=self.m, k=1)
+#         self.cbn4       = nn.BatchNorm2d(num_verb)
+
+#     def get_verb(self, raw, cam):
+#         x  = self.elu(self.bn1(self.verb_context(raw)))
+
+#         z  = x.clone()
+#         sh = list(z.shape)
+#         sh[0] = -1        
+#         q1 = self.elu(self.bn2(self.verb_query(x)))
+#         k1 = self.elu(self.bn3(self.verb_key(x)))
+        
+#         w1 = self.flat(k1).matmul(self.flat(q1).transpose(-1,-2))
+
+#         q2 = self.elu(self.bn4(self.verb_tool_query(cam)))
+#         k2 = self.elu(self.bn5(self.verb_tool_key(cam)))
+#         w2 = self.flat(k2).matmul(self.flat(q2).transpose(-1,-2))
+        
+#         attention = (w1 * w2) / torch.sqrt(torch.tensor(sh[-1], dtype=torch.float32))
+#         attention = self.soft(attention)         
+
+#         v = self.flat(z)
+#         e = (attention.matmul(v) * self.encoder_cagam_verb_beta).reshape(sh)
+#         e = self.bn6(e + z)
+
+#         cmap = self.verb_cmap(e) 
+
+#         # NOTE: TAM in Late Fusion mode 
+#         cmap = self.cmap_attn4(cmap)   
+#         cmap = self.cbn4(cmap)
+#         cmap = self.elu(cmap)
+        
+#         cmap = self.cmap_attn5(cmap)  
+
+#         y = self.gmp(cmap).squeeze(-1).squeeze(-1)
+        
+#         return cmap, y  
+    
+#     def get_target(self, raw, cam):
+#         x  = self.elu(self.bn7(self.target_context(raw)))
+#         z  = x.clone()
+#         sh = list(z.shape)
+#         sh[0] = -1        
+#         q1 = self.elu(self.bn8(self.target_query(x)))
+#         k1 = self.elu(self.bn9(self.target_key(x)))
+#         w1 = self.flat(k1).transpose(-1,-2).matmul(self.flat(q1))   
+
+#         q2 = self.elu(self.bn10(self.target_tool_query(cam)))
+#         k2 = self.elu(self.bn11(self.target_tool_key(cam)))
+#         w2 = self.flat(k2).transpose(-1,-2).matmul(self.flat(q2))    
+#         attention = (w1 * w2) / torch.sqrt(torch.tensor(sh[-1], dtype=torch.float32))
+#         attention = self.soft(attention)         
+#         v = self.flat(z)
+#         e = (v.matmul(attention) * self.encoder_cagam_target_beta).reshape(sh)
+#         e = self.bn12(e + z)
+#         cmap = self.target_cmap(e)
+
+#         y = self.gmp(cmap).squeeze(-1).squeeze(-1)
+#         return cmap, y                
+            
+#     def forward(self, x, cam):
+#         cam_v, logit_v = self.get_verb(x, cam)
+#         cam_t, logit_t = self.get_target(x, cam)
+#         return (cam_v, logit_v), (cam_t, logit_t)
+
 class CAGAM(nn.Module):    
     def __init__(self, num_tool, num_verb, num_target, in_depth=512):
         super(CAGAM, self).__init__()        
@@ -289,26 +340,57 @@ class CAGAM(nn.Module):
         cam_t, logit_t = self.get_target(x, cam)
         return (cam_v, logit_v), (cam_t, logit_t)
 
- 
+
+class TAM(nn.Module):
+    """
+    Constructs proposed Temporal Attention Module (TAM)
+    """
+    def __init__(self, in_channels=10, m=3, k=1):
+        super(TAM, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv     = nn.Conv1d(in_channels, 1, kernel_size=k, bias=False) 
+        self.act      = nn.Sigmoid()
+        self.m        = m
+        self.bn1      = nn.BatchNorm1d(1)
+
+    def forward(self, x):
+        # feature descriptor on the global spatial information
+        y = self.avg_pool(x).squeeze()
+
+        # reshape to include time dimension
+        B, c = y.shape # 16x10
+        b = int(B/(self.m + 1)) # 4
+        y = y.reshape([b, self.m+1, c]) # 4 x 4 x 10
+
+        # apply conv to 1 dim value
+        y = self.bn1(self.conv(y.transpose(-1, -2))).transpose(-1, -2)
+
+        # Multi-scale information fusion
+        y = self.act(y)
+
+        B, c, h, w = x.shape
+        x = x.reshape([b, self.m+1, c, h, w])
+        past_cmap, curr_cmap = torch.split(x, [self.m, 1], 1)
+        x = x * y.unsqueeze(-1).unsqueeze(-1)
+        x = x.sum(dim=1).unsqueeze(1)
+        x = torch.cat([past_cmap, x], dim=1).view(b*(self.m+1), c, h, w)
+
+        return x
+
 #%% Projection function
 class Projection(nn.Module):
     def __init__(self, num_tool=6, num_verb=10, num_target=15, num_triplet=100, out_depth=128):
         super(Projection, self).__init__()
-
         self.ivt_value = nn.Conv2d(in_channels=num_triplet, out_channels=out_depth, kernel_size=1)
         self.i_value   = nn.Conv2d(in_channels=num_tool, out_channels=out_depth, kernel_size=1)        
         self.v_value   = nn.Conv2d(in_channels=num_verb, out_channels=out_depth, kernel_size=1)
-        self.t_value   = nn.Conv2d(in_channels=num_target, out_channels=out_depth, kernel_size=1)
-
+        self.t_value   = nn.Conv2d(in_channels=num_target, out_channels=out_depth, kernel_size=1)       
         self.ivt_query = nn.Linear(in_features=num_triplet, out_features=out_depth)
-
         self.dropout   = nn.Dropout(p=0.3)
-
         self.ivt_key   = nn.Linear(in_features=num_triplet, out_features=out_depth)
         self.i_key     = nn.Linear(in_features=num_tool, out_features=out_depth)
         self.v_key     = nn.Linear(in_features=num_verb, out_features=out_depth)
         self.t_key     = nn.Linear(in_features=num_target, out_features=out_depth)
-
         self.gap       = nn.AdaptiveAvgPool2d((1,1))
         self.elu       = nn.ELU()          
         self.bn1       = nn.BatchNorm1d(out_depth)
@@ -336,7 +418,7 @@ class Projection(nn.Module):
         X  = self.elu(F.interpolate(X, (sh[2],sh[3])))
         return (X, (k1,v1), (k2,v2), (k3,v3), (q,k,v))
 
-
+ 
 #%% Multi-head of self and cross attention
 class MHMA(nn.Module):
     def __init__(self, depth, num_class=100, num_heads=4, use_ln=False):
@@ -370,10 +452,9 @@ class MHMA(nn.Module):
         mha   = self.elu(self.bn(self.concat(attn)))
         mha   = self.ln(mha + X.clone())  
         return mha
-
  
 #%% Feed-forward layer
-class FFN(nn.Module):#特征提取和增强
+class FFN(nn.Module):
     def __init__(self, k, num_class=100, use_ln=False):
         super(FFN, self).__init__()
         def Ignore(x): return x
@@ -391,16 +472,20 @@ class FFN(nn.Module):#特征提取和增强
         x  = self.ln(x + inputs.clone())
         return x
 
- 
 #%% Classification layer
 class Classifier(nn.Module):
-    def __init__(self, layer_size, num_class=100):
+    def __init__(self, layer_size, num_class=100, m=3):
         super(Classifier, self).__init__()
-        self.gmp = nn.AdaptiveMaxPool2d((1,1)) 
-        self.mlp = nn.Linear(in_features=num_class, out_features=num_class)     
+        self.gmp = nn.AdaptiveMaxPool2d((1,1))
+        self.mlp = nn.Linear(in_features=num_class, out_features=num_class)
         
     def forward(self, inputs):
         x = self.gmp(inputs).squeeze(-1).squeeze(-1)
         y = self.mlp(x)
         return y
 
+if __name__ == '__main__':
+    input = torch.randn(2, 3, 256, 448)
+    model = RiT(layer_size=8, d_model=128, basename="resnet18", hr_output=False, use_ln=False, m=3)
+    output = model(input)
+    print('test')

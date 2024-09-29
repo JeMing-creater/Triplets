@@ -18,93 +18,15 @@ from monai.utils import ensure_tuple_rep
 from src.dataloader import give_dataset
 from src.optimizer import give_scheduler
 from src.utils import same_seeds, Logger, get_weight_balancing, set_param_in_device, step_params, resume_train_state
+from src.eval import val
 # model
 from src.models.rendezvous import Rendezvous
+from src.models.RIT import RiT
 
 # config setting
 config = EasyDict(yaml.load(open('config.yml', 'r', encoding="utf-8"), Loader=yaml.FullLoader))
 
-# gobel evaluation metrics
-mAP = ivtmetrics.Recognition(100)
-# mAPi = ivtmetrics.Recognition(6)
-# mAPv = ivtmetrics.Recognition(10)
-# mAPt = ivtmetrics.Recognition(15)
-mAP.reset_global()
-# mAPi.reset_global()
-# mAPv.reset_global()
-# mAPt.reset_global()
-
-def val(model, dataloader, loss_functions, activation, step=0, train=False):
-    mAP.reset_global()
-    # mAPi.reset_global()
-    # mAPv.reset_global()
-    # mAPt.reset_global()
-    size = len(dataloader.dataset)
-    num_batches = len(dataloader)
-    mAP.reset()  
-    # mAPv.reset() 
-    # mAPt.reset() 
-    # mAPi.reset()
-    if train == False:
-        data_set = 'Val'
-    else:
-        data_set = 'Train'
-    with torch.no_grad():
-        model.eval()
-        for _, (img, (y1, y2, y3, y4)) in enumerate(dataloader):
-            tool, verb, target, triplet = model(img)
-            _, logit_i = tool
-            _, logit_v = verb
-            _, logit_t = target
-            logit_ivt  = triplet  
-            # loss
-            loss_i     = loss_functions['loss_fn_i'](logit_i, y1.float())
-            loss_v     = loss_functions['loss_fn_v'](logit_v, y2.float())
-            loss_t     = loss_functions['loss_fn_t'](logit_t, y3.float())
-            loss_ivt   = loss_functions['loss_fn_ivt'](logit_ivt, y4.float())  
-            loss       = (loss_i) + (loss_v) + (loss_t) + loss_ivt
-            # all score
-            # mAPi.update(y1.float().detach().cpu(), activation(logit_i).detach().cpu()) # Log metrics 
-            # mAPv.update(y2.float().detach().cpu(), activation(logit_v).detach().cpu()) # Log metrics 
-            # mAPt.update(y3.float().detach().cpu(), activation(logit_t).detach().cpu()) # Log metrics 
-            mAP.update(y4.float().detach().cpu(), activation(triplet).detach().cpu())
-            # log loss
-            if train==False:
-                accelerator.log({
-                    'Val/Total Loss': float(loss.item()),
-                    'Val/loss_i': float(loss_i.item()),
-                    'Val/loss_v': float(loss_v.item()),
-                    'Val/loss_t': float(loss_t.item()),
-                    'Val/loss_ivt': float(loss_ivt.item()),
-                    }, step=step)
-                step += 1
-    mAP.video_end() 
-    # mAPv.video_end()
-    # mAPt.video_end()
-    # mAPi.video_end()
-    
-    APscore = mAP.compute_video_AP()['mAP']
-    
-    mAP_i = mAP.compute_video_AP('i', ignore_null=True)
-    mAP_v = mAP.compute_video_AP('v', ignore_null=True)
-    mAP_t = mAP.compute_video_AP('t', ignore_null=True)
-    
-    mAP_iv = mAP.compute_video_AP('iv', ignore_null=True)
-    mAP_it = mAP.compute_video_AP('it', ignore_null=True)
-    mAP_ivt = mAP.compute_video_AP('ivt', ignore_null=True) 
-    
-    metrics = {
-        f'{data_set}/APscore': round(APscore * 100, 3),
-        f'{data_set}/I': round(mAP_i["mAP"] * 100, 3),
-        f'{data_set}/V': round(mAP_v["mAP"] * 100, 3),
-        f'{data_set}/T': round(mAP_t["mAP"] * 100, 3),
-        f'{data_set}/IV': round(mAP_iv["mAP"] * 100, 3),
-        f'{data_set}/IT': round(mAP_it["mAP"] * 100, 3),
-        f'{data_set}/IVT': round(mAP_ivt["mAP"] * 100, 3)
-    }
-    
-    return metrics, step
-    
+   
 def train_one_epoch(config, model, train_loader, loss_functions, optimizers, schedulers, accelerator, epoch, step):
     # train
     model.train()
@@ -121,13 +43,17 @@ def train_one_epoch(config, model, train_loader, loss_functions, optimizers, sch
         loss_ivt    = loss_functions['loss_fn_ivt'](logit_ivt, y4.float())  
         loss        = (loss_i) + (loss_v) + (loss_t) + loss_ivt 
         # Backpropagation # optimizer.zero_grad()
-        for param in model.parameters():
-            param.grad = None
+        # for param in model.parameters():
+        #     param.grad = None
+        
         # lose backward
         accelerator.backward(loss)
 
         # optimizer.step
         step_params(optimizers)
+        
+        model.zero_grad()
+        
         # log
         accelerator.log({
             'Train/Total Loss': float(loss.item()),
@@ -144,37 +70,23 @@ def train_one_epoch(config, model, train_loader, loss_functions, optimizers, sch
     accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Epoch Losses => total:[{loss.item():.4f}] ivt: [{loss_ivt.item():.4f}] i: [{loss_i.item():.4f}] v: [{loss_v.item():.4f}] t: [{loss_t.item():.4f}]', flush=True)    
 
     if config.trainer.val_training == True:
-        metrics, _ = val(model, train_loader, loss_functions, activation, step=0, train=True)
-        APscore = metrics['Train/APscore']
-        i_score = metrics['Train/I']
-        t_score = metrics['Train/T']
-        v_score = metrics['Train/V']
-        iv_score = metrics['Train/IV']
-        it_score = metrics['Train/IT']
-        ivt_score = metrics['Train/IVT']
-        accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Training Metrics => APscore:[{APscore}] i: [{i_score}] v: [{v_score}] t: [{t_score}] iv: [{iv_score}] iv: [{it_score}] ivt: [{ivt_score}]', flush=True)    
+        metrics, _ = val(config, model, train_loader, activation, step=-1, train=True)
         accelerator.log(metrics, step=epoch)
     
     return step
 
 def val_one_epoch(config, model, val_loader, loss_functions, activation, epoch, step):
-    metrics, step = val(model, val_loader, loss_functions, activation, step=step, train=False)
-    # ivt_score = metrics['Val/APscore']
-    # i_score = metrics['Val/APiscore']
-    # t_score = metrics['Val/APtscore']
-    # v_score = metrics['Val/APvscore']
-    
-    APscore = metrics['Val/APscore']
+    metrics, step = val(config, model, val_loader, activation, step=step, train=False)
     i_score = metrics['Val/I']
     t_score = metrics['Val/T']
     v_score = metrics['Val/V']
-    iv_score = metrics['Val/IV']
-    it_score = metrics['Val/IT']
+    ivm_score = metrics['Val/IVM']
+    itm_score = metrics['Val/ITM']
     ivt_score = metrics['Val/IVT']
     
-    accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Val Metrics => APscore:[{APscore}] i: [{i_score}] v: [{v_score}] t: [{t_score}] iv: [{iv_score}] it: [{it_score}] ivt: [{ivt_score}] ', flush=True)    
+    accelerator.print(f'[{epoch+1}/{config.trainer.num_epochs}] Val Metrics => ivt: [{ivt_score}] i: [{i_score}] v: [{v_score}] t: [{t_score}] iv: [{ivm_score}] it: [{itm_score}] ', flush=True)    
     accelerator.log(metrics, step=epoch)
-    return APscore, metrics, step
+    return ivt_score, metrics, step
 
 if __name__ == '__main__':
     same_seeds(50)
@@ -188,19 +100,35 @@ if __name__ == '__main__':
     train_loader, val_loader, test_loader = give_dataset(config.dataset)
     
     # load model
-    model = Rendezvous('resnet18', hr_output=False, use_ln=False).cuda()
-    pytorch_total_params = sum(p.numel() for p in model.parameters())
-    pytorch_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
+    model = RiT(layer_size=8, d_model=128, basename="resnet18", hr_output=False, use_ln=False, m=3)
     # load optimizer and scheduler
-    module_i        = list(set(model.parameters()) - set(model.encoder.cagam.parameters()) - set(model.encoder.bottleneck.parameters()) - set(model.decoder.parameters()))
-    module_ivt      = list(set(model.encoder.bottleneck.parameters()).union(set(model.decoder.parameters())))
-    module_vt       = model.encoder.cagam.parameters()
-    wp_lr           = [lr/config.trainer.power for lr in config.trainer.lr]
+    params1, params2, params3 = [], [], []
+    for key, value in dict(model.named_parameters()).items():
+        if value.requires_grad:
+            if 'wsl' in key: 
+                params1 += [{'params':[value]}]
+            elif 'cagam' in key:
+                params2 += [{'params':[value]}]
+            elif 'basemodel' in key:
+                    params1 += [{'params':[value]}]
+            elif 'decoder' in key or 'bottleneck' in key:
+                params3 += [{'params':[value]}]
+            else:
+                print("---- keys missed ------")
+                print(key)
+    
+    opt_dict = {'opt1': {'lr': config.trainer.lr[0], 'sf': config.trainer.sf[0], 'iters': config.trainer.ms[0], 'gamma':  config.trainer.g[0]},
+                'opt2': {'lr': config.trainer.lr[1], 'sf': config.trainer.sf[1], 'iters': config.trainer.ms[1], 'gamma':  config.trainer.g[1]},
+                'opt3': {'lr': config.trainer.lr[2], 'sf': config.trainer.sf[2], 'iters': config.trainer.ms[2], 'gamma':  config.trainer.g[2]}
+            }
+    decay1 = 1e-6 
+    decay2 = 1e-6 
+    decay3 = 1e-6
+    mom_y  = 0.95
     optimizers = {
-        'optimizer_i': torch.optim.SGD(module_i, lr=wp_lr[0], weight_decay=config.trainer.weight_decay),
-        'optimizer_vt': torch.optim.SGD(module_vt, lr=wp_lr[1], weight_decay=config.trainer.weight_decay),
-        'optimizer_ivt': torch.optim.SGD(module_ivt, lr=wp_lr[2], weight_decay=config.trainer.weight_decay)
+        'optimizer_i': torch.optim.SGD(params1, lr=opt_dict["opt1"]["lr"], weight_decay=decay1, momentum=mom_y),
+        'optimizer_vt': torch.optim.SGD(params2, lr=opt_dict["opt2"]["lr"], weight_decay=decay2, momentum=mom_y),
+        'optimizer_ivt': torch.optim.SGD(params3, lr=opt_dict["opt3"]["lr"], weight_decay=decay3, momentum=mom_y)
         }
     schedulers = {
         'scheduler_i': give_scheduler(config, optimizers['optimizer_i'], 0),

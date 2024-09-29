@@ -49,7 +49,7 @@ def resume_train_state(model, checkpoint, optimizers, schedulers, accelerator):
     except Exception as e:
         accelerator.print(e)
         accelerator.print(f'Failed to load training state!')
-        return model, optimizers, schedulers, 0, 0, 0, -1, {}
+        return model, optimizers, schedulers, 0, 0, 0, torch.nn.Parameter(torch.tensor([0.0]), requires_grad=False), {}
 
 
 def load_pretrain_model(pretrain_path: str, model: nn.Module, accelerator: Accelerator):

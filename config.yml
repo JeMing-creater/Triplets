@@ -1,20 +1,27 @@
 trainer:
   num_epochs: 100
-  lr: [0.01, 0.01, 0.01]
+  # lr: [0.01, 0.01, 0.01]
+  lr: [0.1, 0.1, 0.1]
+  sf: [0.1, 0.1, 0.1]
+  g: [0.94, 0.95, 0.99]
+  ms: [20,39,60]
   warmups: [9,18,58]
   power: 0.1
+  top: 5
   optimizer: sgd
   decay_rate: 0.99
   weight_decay: 0.05
   weight_decay_end: 0.04
   val_training: False
-  resume: True
+  resume: False
+  
 
 finetune:
   checkpoint: Rendezvous
 
 dataset:
-  batch_size: 64
+  batch_size: 32
+  class_num: 100
   num_workers: 4
   kfold: 1
   data_dir: '/root/.cache/huggingface/forget/datasets/CholecT45/'

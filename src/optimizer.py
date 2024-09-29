@@ -100,7 +100,8 @@ class LinearWarmupCosineAnnealingLR(torch.optim.lr_scheduler._LRScheduler):
         ]
 
 def give_scheduler(config, optimizer, num=0):
-    scheduler_a    = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=config.trainer.power, total_iters=config.trainer.warmups[num])
-    scheduler_b    = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=config.trainer.decay_rate)
-    scheduler     = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[scheduler_a, scheduler_b], milestones=[config.trainer.warmups[num]+1])
+    scheduler_a    = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=config.trainer.sf[num], total_iters=config.trainer.ms[num])
+    scheduler_b    = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=config.trainer.g[num])
+    scheduler     = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[scheduler_a, scheduler_b], milestones=[config.trainer.ms[num]+1])
     return scheduler
+
